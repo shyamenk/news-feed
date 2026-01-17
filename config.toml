@@ -1,0 +1,15 @@
+[app]
+theme = "catppuccin-mocha"
+startup_cleanup = false
+
+[ui]
+show_ascii_banner = true
+default_tab = "all-posts"
+
+[[feeds.sources]]
+url = "https://dev.to/rss"
+category = "Development"
+
+[[feeds.sources]]
+url = "https://jamesclear.com/feed"
+category = "Productivity"
