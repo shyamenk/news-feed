@@ -1,5 +1,12 @@
 # News Feed TUI (News)
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![GitHub issues](https://img.shields.io/github/issues/shyamenk/news-feed)](https://github.com/shyamenk/news-feed/issues)
+[![GitHub stars](https://img.shields.io/github/stars/shyamenk/news-feed)](https://github.com/shyamenk/news-feed/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/shyamenk/news-feed)](https://github.com/shyamenk/news-feed/network)
+[![Made with Rust](https://img.shields.io/badge/Made%20with-Rust-orange?logo=rust)](https://www.rust-lang.org/)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-FFDD00.svg?logo=buymeacoffee&logoColor=black)](https://www.buymeacoffee.com/shyamenk)
+
 A fast, distraction-free, terminal-based RSS news feed reader built with Rust and Ratatui. Designed for developers who want to stay updated without leaving the command line.
 
 ![Screenshot](dashboard.png)
