@@ -2,7 +2,7 @@
 
 A fast, distraction-free, terminal-based RSS news feed reader built with Rust and Ratatui. Designed for developers who want to stay updated without leaving the command line.
 
-![Screenshot](image.png)
+![Screenshot](dashboard.png)
 
 ## Features
 
