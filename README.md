@@ -1,4 +1,4 @@
-# News Feed TUI (Mews)
+# News Feed TUI (News)
 
 A fast, distraction-free, terminal-based RSS news feed reader built with Rust and Ratatui. Designed for developers who want to stay updated without leaving the command line.
 
@@ -37,33 +37,33 @@ cargo build --release
 ```
 The binary will be located at `./target/release/news-feed`.
 
-### 3. Setup `mews` Command
-To run the application using the custom `mews` command, you can create an alias or move the binary to your executable path.
+### 3. Setup `news` Command
+To run the application using the custom `news` command, you can create an alias or move the binary to your executable path.
 
 **Option A: Create an Alias (Temporary)**
 ```bash
-alias mews='./target/release/news-feed'
+alias news='./target/release/news-feed'
 ```
 
 **Option B: Add to PATH (Permanent)**
 Add the following line to your `~/.bashrc` or `~/.zshrc`:
 ```bash
-alias mews='/path/to/news-feed/target/release/news-feed'
+alias news='/path/to/news-feed/target/release/news-feed'
 ```
 *Replace `/path/to/news-feed` with the actual path.*
 
 **Option C: Install Globally**
 Copy the binary to a system directory (requires sudo):
 ```bash
-sudo cp ./target/release/news-feed /usr/local/bin/mews
+sudo cp ./target/release/news-feed /usr/local/bin/news
 ```
-Now you can simply run `mews` from anywhere!
+Now you can simply run `news` from anywhere!
 
 ## Usage
 
 Start the application:
 ```bash
-mews
+news
 # or
 cargo run --release
 ```
