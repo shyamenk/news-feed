@@ -1,9 +1,6 @@
 use crate::db::{Database, Post, PostFilter};
-use crate::tabs::TabState;
 use crate::input::TextInput;
-use crate::categories::CategorySelector;
-use crate::stats::AppStats;
-use crate::ascii_art::get_random_quote;
+use crate::navigation::{FocusPane, NavNode, SidebarState, SmartView};
 use std::sync::{Arc, Mutex};
 
 fn truncate_str(s: &str, max_len: usize) -> String {
@@ -14,77 +11,32 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     }
 }
 
-pub enum CurrentScreen {
-    Home,
-    Article,
-}
-
+#[derive(Debug, Clone, PartialEq)]
 pub enum InputMode {
     Normal,
+    Welcome,
     AddingFeed,
-    SelectingCategoryForFeed,
-    SelectingCategoryForView,
     AddingCategory,
+    SelectingCategory,
+    Confirming(ConfirmAction),
+    Help,
+    EditingCategoryFeeds(String),
 }
 
-pub enum ViewContext {
-    List,
-    Article,
-}
-
-pub struct CategoryViewState {
-    pub categories: Vec<String>,
-    pub selected_index: usize,
-    pub active_category: Option<String>,
-    pub dropdown_open: bool,
-}
-
-impl CategoryViewState {
-    pub fn new() -> Self {
-        CategoryViewState {
-            categories: vec![],
-            selected_index: 0,
-            active_category: None,
-            dropdown_open: false,
-        }
-    }
-
-    pub fn next(&mut self) {
-        if !self.categories.is_empty() && self.selected_index < self.categories.len() - 1 {
-            self.selected_index += 1;
-        }
-    }
-
-    pub fn previous(&mut self) {
-        if self.selected_index > 0 {
-            self.selected_index -= 1;
-        }
-    }
-
-    pub fn get_selected(&self) -> Option<&String> {
-        self.categories.get(self.selected_index)
-    }
-
-    pub fn select_current(&mut self) {
-        if let Some(cat) = self.categories.get(self.selected_index) {
-            self.active_category = Some(cat.clone());
-            self.dropdown_open = false;
-        }
-    }
-}
-
-impl Default for CategoryViewState {
-    fn default() -> Self {
-        Self::new()
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfirmAction {
+    DeletePost(i64),
+    #[allow(dead_code)]
+    DeleteFeed(i64),
+    DeleteCategory(String),
 }
 
 pub struct App {
     pub db: Arc<Mutex<Database>>,
     pub posts: Vec<Post>,
-    pub current_screen: CurrentScreen,
-    pub view_context: ViewContext,
-    pub tabs: TabState,
+    pub focus: FocusPane,
+    pub sidebar: SidebarState,
+    pub active_node: NavNode,
     pub selected_index: usize,
     pub scroll_offset: u16,
     pub exit: bool,
@@ -92,114 +44,196 @@ pub struct App {
     pub is_loading: bool,
     pub input_mode: InputMode,
     pub text_input: TextInput,
-    pub category_selector: CategorySelector,
     pub feeds: Vec<crate::db::Feed>,
     pub selected_feed_index: usize,
-    pub category_view: CategoryViewState,
-    pub cached_stats: AppStats,
-    pub dashboard_quote: &'static str,
+    pub show_read: bool,
+    pub pending_feed_url: Option<String>,
+    pub category_feeds: Vec<crate::db::Feed>,
+    pub category_feed_index: usize,
 }
 
 impl App {
     pub fn new(db: Database) -> Self {
         let db_arc = Arc::new(Mutex::new(db));
         let feeds = db_arc.lock().unwrap().get_feeds().unwrap_or_default();
-        let categories = db_arc.lock().unwrap().get_categories().unwrap_or_default();
-        let cached_stats = AppStats::from_db(&db_arc.lock().unwrap()).unwrap_or_default();
 
-        let mut category_view = CategoryViewState::new();
-        category_view.categories = categories;
+        let mut sidebar = SidebarState::new();
+        {
+            let db = db_arc.lock().unwrap();
+            sidebar.load_categories(&db);
+            sidebar.update_counts(&db);
+        }
+
+        let is_first_run = feeds.is_empty();
+        let active_node = NavNode::SmartView(SmartView::Fresh);
+
+        let posts = if !is_first_run {
+            db_arc.lock().unwrap().get_fresh_feed(10).unwrap_or_default()
+        } else {
+            vec![]
+        };
 
         App {
             db: db_arc,
-            posts: vec![],
-            current_screen: CurrentScreen::Home,
-            view_context: ViewContext::List,
-            tabs: TabState::new(),
+            posts,
+            focus: FocusPane::Sidebar,
+            sidebar,
+            active_node,
             selected_index: 0,
             scroll_offset: 0,
             exit: false,
             message: None,
-            is_loading: true,
-            input_mode: InputMode::Normal,
+            is_loading: !is_first_run,
+            input_mode: if is_first_run {
+                InputMode::Welcome
+            } else {
+                InputMode::Normal
+            },
             text_input: TextInput::new(),
-            category_selector: CategorySelector::new(),
             feeds,
             selected_feed_index: 0,
-            category_view,
-            cached_stats,
-            dashboard_quote: get_random_quote(),
+            show_read: false,
+            pending_feed_url: None,
+            category_feeds: vec![],
+            category_feed_index: 0,
         }
     }
 
-    pub fn refresh_cached_stats(&mut self) {
-        if let Ok(stats) = AppStats::from_db(&self.db.lock().unwrap()) {
-            self.cached_stats = stats;
+    pub fn load_category_feeds(&mut self, category: &str) {
+        self.category_feeds = self
+            .db
+            .lock()
+            .unwrap()
+            .get_feeds_by_category(category)
+            .unwrap_or_default();
+        self.category_feed_index = 0;
+    }
+
+    pub fn next_category_feed(&mut self) {
+        if !self.category_feeds.is_empty() && self.category_feed_index < self.category_feeds.len() - 1 {
+            self.category_feed_index += 1;
         }
     }
 
-    pub fn refresh_categories(&mut self) {
-        if let Ok(categories) = self.db.lock().unwrap().get_categories() {
-            self.category_view.categories = categories;
-            if self.category_view.selected_index >= self.category_view.categories.len() {
-                self.category_view.selected_index = 0;
+    pub fn previous_category_feed(&mut self) {
+        if self.category_feed_index > 0 {
+            self.category_feed_index -= 1;
+        }
+    }
+
+    pub fn delete_category_feed(&mut self) {
+        if let Some(feed) = self.category_feeds.get(self.category_feed_index) {
+            let feed_id = feed.id;
+            let feed_title = feed.title.clone().unwrap_or_else(|| feed.url.clone());
+            if self.db.lock().unwrap().delete_feed(feed_id).is_ok() {
+                self.category_feeds.remove(self.category_feed_index);
+                if self.category_feed_index >= self.category_feeds.len() && !self.category_feeds.is_empty() {
+                    self.category_feed_index = self.category_feeds.len() - 1;
+                }
+                self.reload_feeds();
+                self.refresh_sidebar();
+                self.message = Some(format!("Deleted feed: {}", truncate_str(&feed_title, 30)));
             }
         }
     }
 
-    pub fn next(&mut self) {
+    pub fn focus_left(&mut self) {
+        self.focus = match self.focus {
+            FocusPane::Article => FocusPane::Posts,
+            FocusPane::Posts => FocusPane::Sidebar,
+            FocusPane::Sidebar => FocusPane::Sidebar,
+        };
+    }
+
+    pub fn focus_right(&mut self) {
+        self.focus = match self.focus {
+            FocusPane::Sidebar => FocusPane::Posts,
+            FocusPane::Posts => {
+                if !self.posts.is_empty() {
+                    FocusPane::Posts
+                } else {
+                    FocusPane::Posts
+                }
+            }
+            FocusPane::Article => FocusPane::Article,
+        };
+    }
+
+    pub fn select_sidebar_item(&mut self) {
+        self.active_node = self.sidebar.selected_node();
+        self.reload_posts_for_active_node();
+        self.selected_index = 0;
+        self.focus = FocusPane::Posts;
+    }
+
+    pub fn reload_posts_for_active_node(&mut self) {
+        let db = self.db.lock().unwrap();
+        let posts = match &self.active_node {
+            NavNode::SmartView(sv) => match sv {
+                SmartView::Fresh => {
+                    if self.show_read {
+                        db.get_posts(PostFilter {
+                            only_unread: false,
+                            only_bookmarked: false,
+                            only_archived: false,
+                            only_read_later: false,
+                        })
+                        .unwrap_or_default()
+                    } else {
+                        db.get_fresh_feed(15).unwrap_or_default()
+                    }
+                }
+                SmartView::Starred => db
+                    .get_posts(PostFilter {
+                        only_unread: false,
+                        only_bookmarked: true,
+                        only_archived: false,
+                        only_read_later: false,
+                    })
+                    .unwrap_or_default(),
+                SmartView::ReadLater => db
+                    .get_posts(PostFilter {
+                        only_unread: false,
+                        only_bookmarked: false,
+                        only_archived: false,
+                        only_read_later: true,
+                    })
+                    .unwrap_or_default(),
+                SmartView::Archived => db
+                    .get_posts(PostFilter {
+                        only_unread: false,
+                        only_bookmarked: false,
+                        only_archived: true,
+                        only_read_later: false,
+                    })
+                    .unwrap_or_default(),
+            },
+            NavNode::Category(cat) => db.get_posts_by_category(cat).unwrap_or_default(),
+        };
+
+        self.posts = posts;
+        if self.selected_index >= self.posts.len() && !self.posts.is_empty() {
+            self.selected_index = self.posts.len() - 1;
+        }
+    }
+
+    pub fn refresh_sidebar(&mut self) {
+        let db = self.db.lock().unwrap();
+        self.sidebar.load_categories(&db);
+        self.sidebar.update_counts(&db);
+    }
+
+    pub fn next_post(&mut self) {
         if !self.posts.is_empty() {
             if self.selected_index < self.posts.len() - 1 {
                 self.selected_index += 1;
-            } else {
-                self.selected_index = 0;
             }
         }
     }
 
-    pub fn previous(&mut self) {
-        if !self.posts.is_empty() {
-            if self.selected_index > 0 {
-                self.selected_index -= 1;
-            } else {
-                self.selected_index = self.posts.len() - 1;
-            }
-        }
-    }
-
-    pub fn next_feed(&mut self) {
-        if !self.feeds.is_empty() {
-            if self.selected_feed_index < self.feeds.len() - 1 {
-                self.selected_feed_index += 1;
-            } else {
-                self.selected_feed_index = 0;
-            }
-        }
-    }
-
-    pub fn previous_feed(&mut self) {
-        if !self.feeds.is_empty() {
-            if self.selected_feed_index > 0 {
-                self.selected_feed_index -= 1;
-            } else {
-                self.selected_feed_index = self.feeds.len() - 1;
-            }
-        }
-    }
-
-    pub fn delete_selected_feed(&mut self) {
-        if let Some(feed) = self.feeds.get(self.selected_feed_index) {
-            let feed_url = feed.url.clone();
-            let feed_id = feed.id;
-            if self.db.lock().unwrap().delete_feed(feed_id).is_ok() {
-                self.reload_feeds();
-                self.refresh_categories();
-                self.refresh_cached_stats();
-                self.message = Some(format!("Deleted: {}", feed_url));
-                if self.selected_feed_index >= self.feeds.len() && !self.feeds.is_empty() {
-                    self.selected_feed_index = self.feeds.len() - 1;
-                }
-            }
+    pub fn previous_post(&mut self) {
+        if self.selected_index > 0 {
+            self.selected_index -= 1;
         }
     }
 
@@ -207,8 +241,41 @@ impl App {
         if let Some(post) = self.posts.get(self.selected_index) {
             let _ = self.db.lock().unwrap().mark_as_read(post.id);
             self.posts[self.selected_index].is_read = true;
-            self.current_screen = CurrentScreen::Article;
+            self.focus = FocusPane::Article;
             self.scroll_offset = 0;
+
+            if !self.show_read {
+                if let NavNode::SmartView(SmartView::Fresh) = &self.active_node {
+                    self.refresh_sidebar();
+                }
+            }
+        }
+    }
+
+    pub fn close_article(&mut self) {
+        self.focus = FocusPane::Posts;
+        self.scroll_offset = 0;
+
+        if !self.show_read {
+            if let NavNode::SmartView(SmartView::Fresh) = &self.active_node {
+                self.remove_read_posts();
+            }
+        }
+    }
+
+    fn remove_read_posts(&mut self) {
+        let old_id = self.posts.get(self.selected_index).map(|p| p.id);
+        self.posts.retain(|p| !p.is_read);
+
+        if let Some(old_id) = old_id {
+            self.selected_index = self
+                .posts
+                .iter()
+                .position(|p| p.id == old_id)
+                .unwrap_or(0);
+        }
+        if self.selected_index >= self.posts.len() && !self.posts.is_empty() {
+            self.selected_index = self.posts.len() - 1;
         }
     }
 
@@ -218,18 +285,20 @@ impl App {
             post.is_bookmarked = !post.is_bookmarked;
 
             self.message = Some(if post.is_bookmarked {
-                "Added to Favourites".to_string()
+                "★ Added to Starred".to_string()
             } else {
-                "Removed from Favourites".to_string()
+                "Removed from Starred".to_string()
             });
 
-            if !post.is_bookmarked && matches!(self.tabs.get_active(), crate::tabs::Tab::Favourite) {
-                self.posts.remove(self.selected_index);
-                if self.selected_index >= self.posts.len() && !self.posts.is_empty() {
-                    self.selected_index = self.posts.len() - 1;
+            if !post.is_bookmarked {
+                if let NavNode::SmartView(SmartView::Starred) = &self.active_node {
+                    self.posts.remove(self.selected_index);
+                    if self.selected_index >= self.posts.len() && !self.posts.is_empty() {
+                        self.selected_index = self.posts.len() - 1;
+                    }
                 }
             }
-            self.refresh_cached_stats();
+            self.refresh_sidebar();
         }
     }
 
@@ -239,18 +308,20 @@ impl App {
             post.is_archived = !post.is_archived;
 
             self.message = Some(if post.is_archived {
-                "Archived".to_string()
+                "󰆧 Archived".to_string()
             } else {
                 "Unarchived".to_string()
             });
 
-            if !post.is_archived && matches!(self.tabs.get_active(), crate::tabs::Tab::Archived) {
-                self.posts.remove(self.selected_index);
-                if self.selected_index >= self.posts.len() && !self.posts.is_empty() {
-                    self.selected_index = self.posts.len() - 1;
+            if !post.is_archived {
+                if let NavNode::SmartView(SmartView::Archived) = &self.active_node {
+                    self.posts.remove(self.selected_index);
+                    if self.selected_index >= self.posts.len() && !self.posts.is_empty() {
+                        self.selected_index = self.posts.len() - 1;
+                    }
                 }
             }
-            self.refresh_cached_stats();
+            self.refresh_sidebar();
         }
     }
 
@@ -260,21 +331,52 @@ impl App {
             post.is_read_later = !post.is_read_later;
 
             self.message = Some(if post.is_read_later {
-                "Added to Read Later".to_string()
+                "󰃰 Added to Read Later".to_string()
             } else {
                 "Removed from Read Later".to_string()
             });
 
-            if !post.is_read_later && matches!(self.tabs.get_active(), crate::tabs::Tab::ReadLater) {
-                self.posts.remove(self.selected_index);
-                if self.selected_index >= self.posts.len() && !self.posts.is_empty() {
-                    self.selected_index = self.posts.len() - 1;
+            if !post.is_read_later {
+                if let NavNode::SmartView(SmartView::ReadLater) = &self.active_node {
+                    self.posts.remove(self.selected_index);
+                    if self.selected_index >= self.posts.len() && !self.posts.is_empty() {
+                        self.selected_index = self.posts.len() - 1;
+                    }
                 }
             }
-            self.refresh_cached_stats();
+            self.refresh_sidebar();
         }
     }
 
+    pub fn toggle_read(&mut self) {
+        if let Some(post) = self.posts.get_mut(self.selected_index) {
+            let new_state = !post.is_read;
+            if new_state {
+                let _ = self.db.lock().unwrap().mark_as_read(post.id);
+            } else {
+                let _ = self.db.lock().unwrap().mark_as_unread(post.id);
+            }
+            post.is_read = new_state;
+
+            self.message = Some(if new_state {
+                "Marked as read".to_string()
+            } else {
+                "Marked as unread".to_string()
+            });
+
+            if !self.show_read && new_state {
+                if let NavNode::SmartView(SmartView::Fresh) = &self.active_node {
+                    self.posts.remove(self.selected_index);
+                    if self.selected_index >= self.posts.len() && !self.posts.is_empty() {
+                        self.selected_index = self.posts.len() - 1;
+                    }
+                }
+            }
+            self.refresh_sidebar();
+        }
+    }
+
+    #[allow(dead_code)]
     pub fn delete_selected_post(&mut self) {
         if let Some(post) = self.posts.get(self.selected_index) {
             let post_title = post.title.clone();
@@ -284,61 +386,23 @@ impl App {
                 if self.selected_index >= self.posts.len() && !self.posts.is_empty() {
                     self.selected_index = self.posts.len() - 1;
                 }
-                self.refresh_cached_stats();
+                self.refresh_sidebar();
                 self.message = Some(format!("Deleted: {}", truncate_str(&post_title, 30)));
             }
         }
     }
 
-    pub fn switch_to_tab(&mut self, tab_index: usize) {
-        self.tabs.set_active(tab_index);
-        self.reload_posts_for_current_tab();
-        self.selected_index = 0;
-    }
-
-    pub fn reload_posts_for_current_tab(&mut self) {
-        use crate::tabs::Tab;
-        let db = self.db.lock().unwrap();
-
-        let posts = match self.tabs.get_active() {
-            Tab::Dashboard => vec![],
-            Tab::Category => {
-                if let Some(ref cat) = self.category_view.active_category {
-                    db.get_posts_by_category(cat).unwrap_or_default()
-                } else {
-                    vec![]
-                }
+    #[allow(dead_code)]
+    pub fn delete_selected_feed(&mut self) {
+        if let Some(feed) = self.feeds.get(self.selected_feed_index) {
+            let feed_url = feed.url.clone();
+            let feed_id = feed.id;
+            if self.db.lock().unwrap().delete_feed(feed_id).is_ok() {
+                self.reload_feeds();
+                self.refresh_sidebar();
+                self.reload_posts_for_active_node();
+                self.message = Some(format!("Deleted feed: {}", truncate_str(&feed_url, 30)));
             }
-            Tab::Favourite => db
-                .get_posts(PostFilter {
-                    only_unread: false,
-                    only_bookmarked: true,
-                    only_archived: false,
-                    only_read_later: false,
-                })
-                .unwrap_or_default(),
-            Tab::ReadLater => db
-                .get_posts(PostFilter {
-                    only_unread: false,
-                    only_bookmarked: false,
-                    only_archived: false,
-                    only_read_later: true,
-                })
-                .unwrap_or_default(),
-            Tab::Archived => db
-                .get_posts(PostFilter {
-                    only_unread: false,
-                    only_bookmarked: false,
-                    only_archived: true,
-                    only_read_later: false,
-                })
-                .unwrap_or_default(),
-            Tab::FeedManager => vec![],
-        };
-
-        self.posts = posts;
-        if self.selected_index >= self.posts.len() && !self.posts.is_empty() {
-            self.selected_index = self.posts.len() - 1;
         }
     }
 
@@ -349,25 +413,32 @@ impl App {
         }
     }
 
+    pub fn add_feed(&mut self, url: &str, category: &str) {
+        if !url.trim().is_empty() {
+            if self.db.lock().unwrap().add_feed_with_category(url, category).is_ok() {
+                self.reload_feeds();
+                self.refresh_sidebar();
+                self.message = Some(format!("Added feed: {}", truncate_str(url, 40)));
+            }
+        }
+    }
+
     pub fn add_category(&mut self, name: &str) {
-        if !name.trim().is_empty() && !self.category_view.categories.contains(&name.to_string()) {
+        if !name.trim().is_empty() {
             if self.db.lock().unwrap().add_category(name).is_ok() {
-                self.refresh_categories();
+                self.refresh_sidebar();
                 self.message = Some(format!("Added category: {}", name));
             }
         }
     }
 
+    #[allow(dead_code)]
     pub fn delete_selected_category(&mut self) {
-        if let Some(cat) = self.category_view.get_selected().cloned() {
+        if let Some(cat) = self.sidebar.categories.get(self.sidebar.category_index).cloned() {
             if cat != "General" {
                 if self.db.lock().unwrap().delete_category(&cat).is_ok() {
-                    if self.category_view.active_category.as_ref() == Some(&cat) {
-                        self.category_view.active_category = None;
-                        self.posts.clear();
-                    }
-                    self.refresh_categories();
-                    self.refresh_cached_stats();
+                    self.refresh_sidebar();
+                    self.reload_posts_for_active_node();
                     self.message = Some(format!("Deleted category: {}", cat));
                 }
             } else {
@@ -375,4 +446,55 @@ impl App {
             }
         }
     }
+
+    pub fn toggle_show_read(&mut self) {
+        self.show_read = !self.show_read;
+        self.reload_posts_for_active_node();
+        self.message = Some(if self.show_read {
+            "Showing all posts".to_string()
+        } else {
+            "Showing unread only".to_string()
+        });
+    }
+
+    pub fn copy_url_to_clipboard(&mut self) {
+        if let Some(post) = self.posts.get(self.selected_index) {
+            let url = &post.url;
+            print!("\x1b]52;c;{}\x07", base64_encode(url));
+            self.message = Some("URL copied to clipboard".to_string());
+        }
+    }
+
+    pub fn get_selected_category(&self) -> String {
+        self.sidebar
+            .categories
+            .get(self.sidebar.category_index)
+            .cloned()
+            .unwrap_or_else(|| "General".to_string())
+    }
+}
+
+fn base64_encode(input: &str) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = input.as_bytes();
+    let mut result = String::new();
+
+    for chunk in bytes.chunks(3) {
+        let mut n: u32 = 0;
+        for (i, &byte) in chunk.iter().enumerate() {
+            n |= (byte as u32) << (16 - 8 * i);
+        }
+
+        let chars_to_output = chunk.len() + 1;
+        for i in 0..4 {
+            if i < chars_to_output {
+                let idx = ((n >> (18 - 6 * i)) & 0x3F) as usize;
+                result.push(ALPHABET[idx] as char);
+            } else {
+                result.push('=');
+            }
+        }
+    }
+
+    result
 }

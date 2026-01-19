@@ -1,5 +1,6 @@
 use rusqlite::{params, Connection, Result};
 use std::error::Error;
+use std::path::Path;
 use chrono::{DateTime, Utc};
 
 pub struct Database {
@@ -34,7 +35,18 @@ pub struct Post {
 #[allow(dead_code)]
 impl Database {
     pub fn init() -> Result<Self, Box<dyn Error>> {
-        let conn = Connection::open("news_feed.db")?;
+        Self::init_with_path("news_feed.db")
+    }
+
+    pub fn init_with_path<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn Error>> {
+        let path = path.as_ref();
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let conn = Connection::open(path)?;
         
         conn.execute(
             "CREATE TABLE IF NOT EXISTS feeds (
@@ -168,6 +180,14 @@ impl Database {
     pub fn mark_as_read(&self, post_id: i64) -> Result<()> {
         self.conn.execute(
             "UPDATE posts SET is_read = 1 WHERE id = ?1",
+            params![post_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_as_unread(&self, post_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE posts SET is_read = 0 WHERE id = ?1",
             params![post_id],
         )?;
         Ok(())
@@ -325,7 +345,14 @@ impl Database {
     }
 
     pub fn get_categories(&self) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare("SELECT DISTINCT category FROM feeds ORDER BY category")?;
+        // Get categories from both the categories table and feeds table
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT name FROM (
+                SELECT name FROM categories
+                UNION
+                SELECT DISTINCT category AS name FROM feeds WHERE category IS NOT NULL
+            ) ORDER BY name"
+        )?;
         let category_iter = stmt.query_map([], |row| row.get(0))?;
 
         let mut categories = Vec::new();
@@ -449,6 +476,36 @@ impl Database {
         );
         Ok(())
     }
+
+    /// Reset the database by deleting all data (feeds, posts, categories)
+    pub fn reset(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM posts", [])?;
+        self.conn.execute("DELETE FROM feeds", [])?;
+        self.conn.execute("DELETE FROM categories", [])?;
+        self.conn.execute("DELETE FROM user_preferences", [])?;
+        Ok(())
+    }
+
+    /// Clean up old posts older than specified days
+    pub fn cleanup_old_posts(&self, days: u32) -> Result<usize> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(days as i64);
+        let cutoff_str = cutoff.to_rfc3339();
+
+        let count = self.conn.execute(
+            "DELETE FROM posts WHERE pub_date < ?1 AND is_bookmarked = 0",
+            params![cutoff_str],
+        )?;
+        Ok(count)
+    }
+
+    /// Get total counts for statistics
+    pub fn get_total_posts_count(&self) -> Result<usize> {
+        self.get_count("SELECT COUNT(*) FROM posts")
+    }
+
+    pub fn get_total_feeds_count(&self) -> Result<usize> {
+        self.get_count("SELECT COUNT(*) FROM feeds")
+    }
 }
 
 pub struct PostFilter {
@@ -456,4 +513,62 @@ pub struct PostFilter {
     pub only_bookmarked: bool,
     pub only_archived: bool,
     pub only_read_later: bool,
+}
+
+impl Database {
+    /// Get fresh feed: latest N unread posts per category
+    pub fn get_fresh_feed(&self, per_category_limit: usize) -> Result<Vec<Post>> {
+        let categories = self.get_categories().unwrap_or_default();
+        let mut all_posts = Vec::new();
+
+        for category in categories {
+            let query = format!(
+                "SELECT p.id, p.feed_id, p.title, p.url, p.content, p.pub_date, p.is_read, p.is_bookmarked, 
+                        COALESCE(p.is_archived, 0), COALESCE(p.is_read_later, 0), f.title
+                 FROM posts p
+                 JOIN feeds f ON p.feed_id = f.id
+                 WHERE f.category = ?1 AND p.is_read = 0
+                 ORDER BY p.pub_date DESC
+                 LIMIT ?2"
+            );
+
+            let mut stmt = self.conn.prepare(&query)?;
+            let post_iter = stmt.query_map(params![category, per_category_limit as i64], |row| {
+                let pub_date_str: Option<String> = row.get(5)?;
+                let pub_date = pub_date_str.and_then(|s| DateTime::parse_from_rfc3339(&s).ok().map(|d| d.with_timezone(&Utc)));
+
+                Ok(Post {
+                    id: row.get(0)?,
+                    feed_id: row.get(1)?,
+                    title: row.get(2)?,
+                    url: row.get(3)?,
+                    content: row.get(4)?,
+                    pub_date,
+                    is_read: row.get(6)?,
+                    is_bookmarked: row.get(7)?,
+                    is_archived: row.get(8)?,
+                    is_read_later: row.get(9)?,
+                    feed_title: row.get(10)?,
+                })
+            })?;
+
+            for post in post_iter {
+                all_posts.push(post?);
+            }
+        }
+
+        // Sort all posts by pub_date descending
+        all_posts.sort_by(|a, b| b.pub_date.cmp(&a.pub_date));
+        Ok(all_posts)
+    }
+
+    /// Update post content (for fetching full article)
+    #[allow(dead_code)]
+    pub fn update_post_content(&self, post_id: i64, content: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE posts SET content = ?1 WHERE id = ?2",
+            params![content, post_id],
+        )?;
+        Ok(())
+    }
 }

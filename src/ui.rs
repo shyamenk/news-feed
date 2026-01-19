@@ -2,14 +2,13 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph, Tabs, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
-use crate::app::{App, InputMode, ViewContext};
+
+use crate::app::{App, InputMode};
+use crate::navigation::{FocusPane, NavNode, SidebarSection, SmartView};
 use crate::theme::{Theme, ThemeVariant};
-use crate::tabs::Tab;
-use crate::ascii_art::NEWS_BANNER;
-use html2text;
 
 pub fn ui(f: &mut Frame, app: &mut App, theme_name: &str) {
     let theme_variant = ThemeVariant::from_str(theme_name);
@@ -19,6 +18,39 @@ pub fn ui(f: &mut Frame, app: &mut App, theme_name: &str) {
     let block = Block::default().style(Style::default().bg(theme.base()));
     f.render_widget(block, size);
 
+    match &app.input_mode {
+        InputMode::Welcome => {
+            draw_welcome(f, app, size, &*theme);
+            return;
+        }
+        InputMode::Help => {
+            draw_main_layout(f, app, size, &*theme);
+            draw_help_overlay(f, size, &*theme);
+            return;
+        }
+        _ => {}
+    }
+
+    draw_main_layout(f, app, size, &*theme);
+
+    match &app.input_mode {
+        InputMode::AddingFeed => draw_input_modal(f, app, size, &*theme, "Add Feed URL"),
+        InputMode::AddingCategory => draw_input_modal(f, app, size, &*theme, "Add Category"),
+        InputMode::SelectingCategory => draw_category_selector(f, app, size, &*theme),
+        InputMode::EditingCategoryFeeds(cat) => draw_category_feeds_editor(f, app, size, &*theme, cat),
+        InputMode::Confirming(action) => {
+            let msg = match action {
+                crate::app::ConfirmAction::DeletePost(_) => "Delete this post?",
+                crate::app::ConfirmAction::DeleteFeed(_) => "Delete this feed and all its posts?",
+                crate::app::ConfirmAction::DeleteCategory(_) => "Delete this category?",
+            };
+            draw_confirm_modal(f, size, &*theme, msg);
+        }
+        _ => {}
+    }
+}
+
+fn draw_main_layout(f: &mut Frame, app: &mut App, area: Rect, theme: &dyn Theme) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -26,639 +58,671 @@ pub fn ui(f: &mut Frame, app: &mut App, theme_name: &str) {
             Constraint::Min(0),
             Constraint::Length(1),
         ])
-        .split(size);
-
-    draw_tab_bar(f, app, chunks[0], &*theme);
-
-    match (&app.input_mode, app.tabs.get_active(), &app.view_context) {
-        // Article view takes priority
-        (InputMode::Normal, _, ViewContext::Article) => draw_article(f, app, chunks[1], &*theme),
-        // Dashboard
-        (InputMode::Normal, Tab::Dashboard, _) => draw_dashboard(f, app, chunks[1], &*theme, app.is_loading),
-        // Feed Manager
-        (InputMode::Normal, Tab::FeedManager, _) => draw_feed_manager(f, app, chunks[1], &*theme),
-        (InputMode::AddingFeed, Tab::FeedManager, _) => draw_feed_manager_adding(f, app, chunks[1], &*theme),
-        // Category selection for new feed
-        (InputMode::SelectingCategoryForFeed, _, _) => draw_category_selector(f, app, chunks[1], &*theme, "Select Category for Feed"),
-        // Category tab views
-        (InputMode::SelectingCategoryForView, Tab::Category, _) => draw_category_dropdown(f, app, chunks[1], &*theme),
-        (InputMode::AddingCategory, Tab::Category, _) => draw_add_category(f, app, chunks[1], &*theme),
-        (InputMode::Normal, Tab::Category, ViewContext::List) => {
-            if app.category_view.active_category.is_some() {
-                draw_posts_list(f, app, chunks[1], &*theme);
-            } else {
-                draw_category_select_prompt(f, app, chunks[1], &*theme);
-            }
-        }
-        // Default list view
-        (_, _, ViewContext::List) => {
-            if app.is_loading {
-                draw_loading(f, chunks[1], &*theme);
-            } else {
-                draw_posts_list(f, app, chunks[1], &*theme);
-            }
-        }
-        _ => {}
-    }
-
-    draw_status_bar(f, app, chunks[2], &*theme);
-}
-
-fn draw_tab_bar(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme) {
-    let tab_titles: Vec<String> = app.tabs.tabs.iter().map(|t| {
-        format!("{}{}", t.icon(), t.title())
-    }).collect();
-
-    let tabs = Tabs::new(tab_titles)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.accent_primary()))
-            .title(" 󰑫 News Reader ")
-            .title_style(Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD)))
-        .select(app.tabs.active_index)
-        .style(Style::default().fg(theme.subtext()))
-        .highlight_style(Style::default()
-            .fg(theme.accent_secondary())
-            .add_modifier(Modifier::BOLD));
-
-    f.render_widget(tabs, area);
-}
-
-fn draw_loading(f: &mut Frame, area: Rect, theme: &dyn Theme) {
-    let art = vec![
-        "      )  (  )  ",
-        "     (   )  (  ",
-        "   . '  . ' .  ",
-        "   '  . ' . '  ",
-        "  ___________",
-        " |           | ",
-        " |  Coffee   | ",
-        " |   & News  | ",
-        " |___________| ",
-        "  \\_________/  ",
-        "",
-        " Loading feeds...",
-    ];
-
-    let text_art: Vec<Line> = art
-        .iter()
-        .map(|line| Line::from(Span::styled(*line, Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD))))
-        .collect();
-
-    let paragraph = Paragraph::new(text_art)
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::NONE));
-
-    let area = centered_rect(50, 50, area);
-    f.render_widget(paragraph, area);
-}
-
-fn draw_dashboard(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme, is_loading: bool) {
-    let stats = &app.cached_stats;
-
-    let main_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(7),
-            Constraint::Min(0),
-        ])
         .split(area);
 
-    let banner = Paragraph::new(NEWS_BANNER)
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD));
-    f.render_widget(banner, main_chunks[0]);
+    draw_header(f, app, chunks[0], theme);
 
-    let body_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(40),
-            Constraint::Percentage(60),
-        ])
-        .split(main_chunks[1]);
-
-    let left_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(5),
-            Constraint::Min(0),
-        ])
-        .split(body_chunks[0]);
-
-    let quote_block = Paragraph::new(Line::from(vec![
-        Span::styled(app.dashboard_quote, Style::default().fg(theme.text()).add_modifier(Modifier::ITALIC)),
-    ]))
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.subtext()))
-            .title(" 💭 Identity ")
-            .title_style(Style::default().fg(theme.accent_secondary())))
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true });
-    f.render_widget(quote_block, left_chunks[0]);
-
-    let usage_lines = vec![
-        Line::from(vec![
-            Span::styled("[1-6]", Style::default().fg(theme.warning())),
-            Span::styled(" Navigate Tabs", Style::default().fg(theme.text())),
-        ]),
-        Line::from(vec![
-            Span::styled("[Tab]", Style::default().fg(theme.warning())),
-            Span::styled(" Next Tab", Style::default().fg(theme.text())),
-        ]),
-        Line::from(vec![
-            Span::styled("[j/k]", Style::default().fg(theme.warning())),
-            Span::styled(" Up/Down", Style::default().fg(theme.text())),
-        ]),
-        Line::from(vec![
-            Span::styled("[Enter]", Style::default().fg(theme.warning())),
-            Span::styled(" Select/Open", Style::default().fg(theme.text())),
-        ]),
-        Line::from(vec![
-            Span::styled("[B]", Style::default().fg(theme.warning())),
-            Span::styled(" Favourite", Style::default().fg(theme.text())),
-        ]),
-        Line::from(vec![
-            Span::styled("[L]", Style::default().fg(theme.warning())),
-            Span::styled(" Read Later", Style::default().fg(theme.text())),
-        ]),
-        Line::from(vec![
-            Span::styled("[A]", Style::default().fg(theme.warning())),
-            Span::styled(" Archive", Style::default().fg(theme.text())),
-        ]),
-        Line::from(vec![
-            Span::styled("[Q]", Style::default().fg(theme.warning())),
-            Span::styled(" Quit", Style::default().fg(theme.text())),
-        ]),
-    ];
-
-    let usage_block = Paragraph::new(usage_lines)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.accent_primary()))
-            .title(" ⌨ Usage ")
-            .title_style(Style::default().fg(theme.accent_primary())))
-        .style(Style::default().fg(theme.text()));
-    f.render_widget(usage_block, left_chunks[1]);
-
-    let right_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(0),
-        ])
-        .split(body_chunks[1]);
-
-    let status_text = if is_loading { " (Loading...)" } else { "" };
-    let total_line = Line::from(vec![
-        Span::styled("󰈙 ", Style::default().fg(theme.accent_primary())),
-        Span::styled(format!("{}", stats.total_posts), Style::default().fg(theme.warning()).add_modifier(Modifier::BOLD)),
-        Span::styled(" Articles  │  ", Style::default().fg(theme.text())),
-        Span::styled("󰑫 ", Style::default().fg(theme.accent_primary())),
-        Span::styled(format!("{}", stats.feeds_count), Style::default().fg(theme.warning()).add_modifier(Modifier::BOLD)),
-        Span::styled(" Feeds  │  ", Style::default().fg(theme.text())),
-        Span::styled("󰻞 ", Style::default().fg(theme.accent_primary())),
-        Span::styled(format!("{}", stats.categories.len()), Style::default().fg(theme.warning()).add_modifier(Modifier::BOLD)),
-        Span::styled(" Categories", Style::default().fg(theme.text())),
-        Span::styled(status_text, Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::ITALIC)),
-    ]);
-    let total_widget = Paragraph::new(total_line)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.accent_primary())))
-        .alignment(Alignment::Center);
-    f.render_widget(total_widget, right_chunks[0]);
-
-    let read_ratio = stats.reading_progress();
-    let read_gauge = Gauge::default()
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.subtext()))
-            .title(format!(" 📖 Read: {}/{} ", stats.read_posts, stats.total_posts)))
-        .gauge_style(Style::default().fg(theme.success()))
-        .ratio(read_ratio)
-        .label(format!("{}%", (read_ratio * 100.0) as u8));
-    f.render_widget(read_gauge, right_chunks[1]);
-
-    let fav_ratio = if stats.total_posts > 0 {
-        stats.saved_posts as f64 / stats.total_posts as f64
-    } else { 0.0 };
-    let fav_gauge = Gauge::default()
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.subtext()))
-            .title(format!(" 󰃀 Favourites: {} ", stats.saved_posts)))
-        .gauge_style(Style::default().fg(theme.success()))
-        .ratio(fav_ratio);
-    f.render_widget(fav_gauge, right_chunks[2]);
-
-    let archived_ratio = if stats.total_posts > 0 {
-        stats.archived_posts as f64 / stats.total_posts as f64
-    } else { 0.0 };
-    let archived_gauge = Gauge::default()
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.subtext()))
-            .title(format!(" 󰆧 Archived: {} ", stats.archived_posts)))
-        .gauge_style(Style::default().fg(theme.success()))
-        .ratio(archived_ratio);
-    f.render_widget(archived_gauge, right_chunks[3]);
-
-    let later_ratio = if stats.total_posts > 0 {
-        stats.read_later_posts as f64 / stats.total_posts as f64
-    } else { 0.0 };
-    let later_gauge = Gauge::default()
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.subtext()))
-            .title(format!(" 󰃰 Read Later: {} ", stats.read_later_posts)))
-        .gauge_style(Style::default().fg(theme.success()))
-        .ratio(later_ratio);
-    f.render_widget(later_gauge, right_chunks[4]);
-
-    let cat_lines: Vec<Line> = stats.categories.iter()
-        .map(|(cat, count)| Line::from(vec![
-            Span::styled(format!("  󰻞 {} ", cat), Style::default().fg(theme.accent_secondary())),
-            Span::styled(format!("{} posts", count), Style::default().fg(theme.warning())),
-        ]))
-        .collect();
-
-    let cat_widget = Paragraph::new(cat_lines)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.accent_primary()))
-            .title(" 󰺯 Categories ")
-            .title_style(Style::default().fg(theme.accent_primary())))
-        .style(Style::default().fg(theme.text()));
-    f.render_widget(cat_widget, right_chunks[5]);
-}
-
-fn draw_category_select_prompt(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme) {
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::styled("No category selected", Style::default().fg(theme.subtext()).add_modifier(Modifier::BOLD))),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Press ", Style::default().fg(theme.text())),
-            Span::styled("[Enter]", Style::default().fg(theme.warning()).add_modifier(Modifier::BOLD)),
-            Span::styled(" to choose a category", Style::default().fg(theme.text())),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Press ", Style::default().fg(theme.text())),
-            Span::styled("[+]", Style::default().fg(theme.warning()).add_modifier(Modifier::BOLD)),
-            Span::styled(" to add a new category", Style::default().fg(theme.text())),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Press ", Style::default().fg(theme.text())),
-            Span::styled("[d]", Style::default().fg(theme.warning()).add_modifier(Modifier::BOLD)),
-            Span::styled(" to delete selected category", Style::default().fg(theme.text())),
-        ]),
-    ];
-
-    let available_cats: Vec<Line> = app.category_view.categories.iter()
-        .map(|cat| Line::from(Span::styled(format!("  • {}", cat), Style::default().fg(theme.accent_secondary()))))
-        .collect();
-
-    let mut all_lines = lines;
-    all_lines.push(Line::from(""));
-    all_lines.push(Line::from(Span::styled("Available Categories:", Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD))));
-    all_lines.extend(available_cats);
-
-    let widget = Paragraph::new(all_lines)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.accent_primary()))
-            .title(" 󰻞 Category ")
-            .title_style(Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)))
-        .alignment(Alignment::Center);
-
-    f.render_widget(widget, area);
-}
-
-fn draw_category_dropdown(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme) {
-    let items: Vec<ListItem> = app.category_view.categories.iter().enumerate()
-        .map(|(i, cat)| {
-            let is_selected = i == app.category_view.selected_index;
-            let style = if is_selected {
-                Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text())
-            };
-            let prefix = if is_selected { ">> " } else { "   " };
-            ListItem::new(format!("{}{}", prefix, cat)).style(style)
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.warning()))
-            .title(" Select Category (j/k navigate, Enter select, Esc cancel) ")
-            .title_style(Style::default().fg(theme.warning()).add_modifier(Modifier::BOLD)));
-
-    let area = centered_rect(50, 60, area);
-    f.render_widget(list, area);
-}
-
-fn draw_add_category(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme) {
-    let content = format!("Category Name: {}_", app.text_input.value);
-
-    let widget = Paragraph::new(content)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.warning()))
-            .title(" Add New Category (Enter confirm, Esc cancel) ")
-            .title_style(Style::default().fg(theme.warning()).add_modifier(Modifier::BOLD)))
-        .style(Style::default().fg(theme.text()));
-
-    let area = centered_rect(50, 20, area);
-    f.render_widget(widget, area);
-}
-
-fn draw_feed_manager(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(0),
-            Constraint::Length(5),
-        ])
-        .split(area);
-
-    if app.feeds.is_empty() {
-        let empty = Paragraph::new("No feeds configured. Press [+] to add a feed.")
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.accent_primary()))
-                .title(" 󰑫 Feeds ")
-                .title_style(Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)))
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(theme.subtext()));
-        f.render_widget(empty, chunks[0]);
+    // In article view, use full screen (no sidebar)
+    if matches!(app.focus, FocusPane::Article) {
+        draw_article_fullscreen(f, app, chunks[1], theme);
     } else {
-        let items: Vec<ListItem> = app.feeds.iter().enumerate()
-            .map(|(i, feed)| {
-                let is_selected = i == app.selected_feed_index;
-                let prefix = if is_selected { ">> " } else { "   " };
-                let style = if is_selected {
-                    Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.text())
-                };
-                
-                let title_display = feed.title.as_deref().unwrap_or(&feed.url);
-                let line = Line::from(vec![
-                    Span::styled(prefix, style),
-                    Span::styled(title_display, style),
-                    Span::styled(format!(" [{}]", feed.category), Style::default().fg(theme.accent_secondary())),
-                ]);
-                ListItem::new(line)
-            })
-            .collect();
+        let main_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(24), Constraint::Min(0)])
+            .split(chunks[1]);
 
-        let mut list_state = ListState::default();
-        list_state.select(Some(app.selected_feed_index));
-
-        let list = List::new(items)
-            .block(Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.accent_primary()))
-                .title(format!(" 󰑫 Feeds ({}) ", app.feeds.len()))
-                .title_style(Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)))
-            .highlight_style(Style::default().bg(theme.highlight()));
-
-        f.render_stateful_widget(list, chunks[0], &mut list_state);
+        draw_sidebar(f, app, main_chunks[0], theme);
+        draw_posts_list(f, app, main_chunks[1], theme);
     }
 
-    let help_lines = vec![
-        Line::from(vec![
-            Span::styled("[+/n]", Style::default().fg(theme.warning())),
-            Span::styled(" Add Feed  ", Style::default().fg(theme.text())),
-            Span::styled("[d]", Style::default().fg(theme.warning())),
-            Span::styled(" Delete  ", Style::default().fg(theme.text())),
-            Span::styled("[j/k]", Style::default().fg(theme.warning())),
-            Span::styled(" Navigate", Style::default().fg(theme.text())),
-        ]),
-    ];
-
-    let help = Paragraph::new(help_lines)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.subtext()))
-            .title(" Help "))
-        .alignment(Alignment::Center);
-    f.render_widget(help, chunks[1]);
+    draw_status_bar(f, app, chunks[2], theme);
 }
 
-fn draw_feed_manager_adding(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme) {
-    let content = format!("Feed URL: {}_", app.text_input.value);
+fn draw_header(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme) {
+    let loading_indicator = if app.is_loading { " 󰑓 Loading..." } else { "" };
 
-    let widget = Paragraph::new(content)
-        .block(Block::default()
+    let title = format!(" 󰑫 News Reader{} ", loading_indicator);
+
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled(title, Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+        Span::styled(
+            format!("[{}]", app.active_node.title()),
+            Style::default().fg(theme.accent_secondary()),
+        ),
+    ]))
+    .block(
+        Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.warning()))
-            .title(" Add Feed (Enter to continue, Esc cancel) ")
-            .title_style(Style::default().fg(theme.warning()).add_modifier(Modifier::BOLD)))
-        .style(Style::default().fg(theme.text()));
+            .border_style(Style::default().fg(theme.overlay())),
+    );
 
-    let area = centered_rect(70, 20, area);
-    f.render_widget(widget, area);
+    f.render_widget(header, area);
 }
 
-fn draw_category_selector(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme, title: &str) {
-    use crate::categories::CATEGORIES;
+fn draw_sidebar(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme) {
+    let is_focused = matches!(app.focus, FocusPane::Sidebar);
+    let border_color = if is_focused {
+        theme.accent_primary()
+    } else {
+        theme.overlay()
+    };
 
-    let items: Vec<ListItem> = CATEGORIES.iter().enumerate()
-        .map(|(i, cat)| {
-            let is_selected = i == app.category_selector.selected_index;
-            let style = if is_selected {
-                Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text())
-            };
-            let prefix = if is_selected { ">> " } else { "   " };
-            ListItem::new(format!("{}{}", prefix, cat)).style(style)
-        })
-        .collect();
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .title(if is_focused { " Navigation " } else { " Nav " })
+        .title_style(Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD));
 
-    let list = List::new(items)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.warning()))
-            .title(format!(" {} (j/k navigate, Enter select) ", title))
-            .title_style(Style::default().fg(theme.warning()).add_modifier(Modifier::BOLD)));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-    let area = centered_rect(50, 60, area);
-    f.render_widget(list, area);
-}
+    let mut items: Vec<ListItem> = Vec::new();
 
-fn draw_posts_list(f: &mut Frame, app: &mut App, area: Rect, theme: &dyn Theme) {
-    if app.posts.is_empty() {
-        let msg = match app.tabs.get_active() {
-            Tab::Category => {
-                if let Some(ref cat) = app.category_view.active_category {
-                    format!("No posts in '{}' category", cat)
-                } else {
-                    "Select a category first".to_string()
-                }
-            }
-            Tab::Favourite => "No favourites yet. Press [B] on a post to add.".to_string(),
-            Tab::ReadLater => "No read later items. Press [L] on a post to add.".to_string(),
-            Tab::Archived => "No archived posts. Press [A] on a post to archive.".to_string(),
-            _ => "No posts available".to_string(),
+    items.push(ListItem::new(Line::from(Span::styled(
+        "VIEWS",
+        Style::default().fg(theme.subtext()).add_modifier(Modifier::BOLD),
+    ))));
+
+    for (i, sv) in app.sidebar.smart_views.iter().enumerate() {
+        let is_selected = matches!(app.sidebar.section, SidebarSection::SmartViews)
+            && app.sidebar.smart_view_index == i
+            && is_focused;
+
+        let count = app.sidebar.get_count(&NavNode::SmartView(sv.clone()));
+        let is_active = app.active_node == NavNode::SmartView(sv.clone());
+
+        let prefix = if is_active { "▶ " } else { "  " };
+        let style = if is_selected {
+            Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)
+        } else if is_active {
+            Style::default().fg(theme.accent_primary())
+        } else {
+            Style::default().fg(theme.text())
         };
 
-        let empty = Paragraph::new(msg)
-            .block(Block::default()
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(prefix, style),
+            Span::styled(sv.icon(), style),
+            Span::styled(format!(" {} ", sv.title()), style),
+            Span::styled(format!("({})", count), Style::default().fg(theme.subtext())),
+        ])));
+    }
+
+    items.push(ListItem::new(Line::from("")));
+    items.push(ListItem::new(Line::from(Span::styled(
+        "CATEGORIES",
+        Style::default().fg(theme.subtext()).add_modifier(Modifier::BOLD),
+    ))));
+
+    for (i, cat) in app.sidebar.categories.iter().enumerate() {
+        let is_selected = matches!(app.sidebar.section, SidebarSection::Categories)
+            && app.sidebar.category_index == i
+            && is_focused;
+
+        let count = app.sidebar.get_count(&NavNode::Category(cat.clone()));
+        let is_active = app.active_node == NavNode::Category(cat.clone());
+
+        let prefix = if is_active { "▶ " } else { "  " };
+        let style = if is_selected {
+            Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)
+        } else if is_active {
+            Style::default().fg(theme.accent_primary())
+        } else {
+            Style::default().fg(theme.text())
+        };
+
+        let display_name = if cat.len() > 12 {
+            format!("{}…", &cat[..11])
+        } else {
+            cat.clone()
+        };
+
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(prefix, style),
+            Span::styled("󰉋 ", style),
+            Span::styled(format!("{} ", display_name), style),
+            Span::styled(format!("({})", count), Style::default().fg(theme.subtext())),
+        ])));
+    }
+
+    let list = List::new(items);
+    f.render_widget(list, inner);
+}
+
+fn draw_posts_list(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme) {
+    let is_focused = matches!(app.focus, FocusPane::Posts);
+    let border_color = if is_focused {
+        theme.accent_primary()
+    } else {
+        theme.overlay()
+    };
+
+    let title = format!(
+        " {} ({}) ",
+        app.active_node.title(),
+        app.posts.len()
+    );
+
+    if app.posts.is_empty() {
+        let empty_msg = match &app.active_node {
+            NavNode::SmartView(SmartView::Fresh) => "All caught up! No unread posts.",
+            NavNode::SmartView(SmartView::Starred) => "No starred posts yet. Press 'b' to star.",
+            NavNode::SmartView(SmartView::ReadLater) => "No posts saved for later. Press 'l' to save.",
+            NavNode::SmartView(SmartView::Archived) => "No archived posts.",
+            NavNode::Category(_) => "No posts in this category.",
+        };
+
+        let paragraph = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(empty_msg, Style::default().fg(theme.subtext()))),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press 'r' to refresh feeds",
+                Style::default().fg(theme.overlay()),
+            )),
+        ])
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(theme.accent_primary()))
-                .title(format!(" {} ", app.tabs.get_active().title())))
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(theme.subtext()));
-        f.render_widget(empty, area);
+                .border_style(Style::default().fg(border_color))
+                .title(title)
+                .title_style(Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)),
+        );
+
+        f.render_widget(paragraph, area);
         return;
     }
 
-    let items: Vec<ListItem> = app.posts
+    let items: Vec<ListItem> = app
+        .posts
         .iter()
-        .map(|post| {
-            let title = if post.is_read {
-                Span::styled(&post.title, Style::default().fg(theme.overlay()))
+        .enumerate()
+        .map(|(i, post)| {
+            let is_selected = i == app.selected_index && is_focused;
+
+            let read_indicator = if post.is_read { "○" } else { "●" };
+            let read_style = if post.is_read {
+                Style::default().fg(theme.overlay())
             } else {
-                Span::styled(&post.title, Style::default().fg(theme.text()).add_modifier(Modifier::BOLD))
+                Style::default().fg(theme.accent_primary())
             };
 
-            let feed = Span::styled(
-                format!(" [{}]", post.feed_title.as_deref().unwrap_or("?")),
-                Style::default().fg(theme.warning())
-            );
-
-            let mut badges = vec![];
+            let mut badges = String::new();
             if post.is_bookmarked {
-                badges.push(Span::styled(" [FAV]", Style::default().fg(theme.accent_secondary())));
-            }
-            if post.is_archived {
-                badges.push(Span::styled(" [ARC]", Style::default().fg(theme.subtext())));
+                badges.push_str(" ★");
             }
             if post.is_read_later {
-                badges.push(Span::styled(" [LATER]", Style::default().fg(theme.success())));
+                badges.push_str(" 󰃰");
+            }
+            if post.is_archived {
+                badges.push_str(" 󰆧");
             }
 
-            let mut line_parts = vec![title, feed];
-            line_parts.extend(badges);
+            let title_max_len = (area.width as usize).saturating_sub(25);
+            let title = if post.title.len() > title_max_len {
+                format!("{}…", &post.title[..title_max_len.saturating_sub(1)])
+            } else {
+                post.title.clone()
+            };
 
-            ListItem::new(Line::from(line_parts))
+            let date = post
+                .pub_date
+                .map(|d| d.format("%m/%d").to_string())
+                .unwrap_or_default();
+
+            let feed = post
+                .feed_title
+                .as_ref()
+                .map(|t| {
+                    if t.len() > 10 {
+                        format!("{}…", &t[..9])
+                    } else {
+                        t.clone()
+                    }
+                })
+                .unwrap_or_default();
+
+            let title_style = if is_selected {
+                Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)
+            } else if post.is_read {
+                Style::default().fg(theme.subtext())
+            } else {
+                Style::default().fg(theme.text())
+            };
+
+            let cursor = if is_selected { "▶" } else { " " };
+
+            ListItem::new(Line::from(vec![
+                Span::styled(cursor, Style::default().fg(theme.accent_primary())),
+                Span::styled(format!(" {} ", read_indicator), read_style),
+                Span::styled(title, title_style),
+                Span::styled(badges, Style::default().fg(theme.warning())),
+                Span::styled(format!("  {} ", date), Style::default().fg(theme.overlay())),
+                Span::styled(format!("[{}]", feed), Style::default().fg(theme.subtext())),
+            ]))
         })
         .collect();
 
-    let tab_title = match app.tabs.get_active() {
-        Tab::Category => {
-            if let Some(ref cat) = app.category_view.active_category {
-                format!(" {} ({}) ", cat, app.posts.len())
-            } else {
-                " Category ".to_string()
-            }
-        }
-        _ => format!(" {} ({}) ", app.tabs.get_active().title(), app.posts.len()),
-    };
-
     let list = List::new(items)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme.accent_primary()))
-            .title(tab_title)
-            .title_style(Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)))
-        .highlight_style(Style::default().bg(theme.highlight()).add_modifier(Modifier::BOLD))
-        .highlight_symbol(">> ");
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color))
+                .title(title)
+                .title_style(Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)),
+        )
+        .highlight_style(Style::default().bg(theme.surface()));
 
-    let mut list_state = ListState::default();
-    list_state.select(Some(app.selected_index));
-    f.render_stateful_widget(list, area, &mut list_state);
+    let mut state = ListState::default();
+    if is_focused {
+        state.select(Some(app.selected_index));
+    }
+    f.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_article(f: &mut Frame, app: &mut App, area: Rect, theme: &dyn Theme) {
-    if let Some(post) = app.posts.get(app.selected_index) {
-        let content_raw = post.content.clone().unwrap_or_default();
-        let display_content = if content_raw.trim().is_empty() {
-            format!("No content available for this post.\n\nLink: {}", post.url)
-        } else {
-            content_raw
-        };
+fn draw_article_fullscreen(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme) {
+    let Some(post) = app.posts.get(app.selected_index) else {
+        return;
+    };
 
-        let text_content = html2text::from_read(display_content.as_bytes(), area.width as usize)
-            .unwrap_or_else(|_| format!("Error parsing content.\n\nLink: {}", post.url));
+    // Add horizontal padding for better readability
+    let padding = if area.width > 120 { 15 } else if area.width > 80 { 8 } else { 2 };
+    
+    let padded_area = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(padding),
+            Constraint::Min(0),
+            Constraint::Length(padding),
+        ])
+        .split(area)[1];
 
-        let mut title_badges = vec![];
-        if post.is_bookmarked {
-            title_badges.push("[FAV]");
-        }
-        if post.is_archived {
-            title_badges.push("[ARC]");
-        }
-        if post.is_read_later {
-            title_badges.push("[LATER]");
-        }
+    // Calculate content width for html2text
+    let content_width = padded_area.width.saturating_sub(4) as usize;
+    
+    let content = post.content.as_deref().unwrap_or("No content available.");
+    let text_content = html2text::from_read(content.as_bytes(), content_width.max(40))
+        .unwrap_or_else(|_| content.to_string());
 
-        let title_text = if title_badges.is_empty() {
-            post.title.clone()
-        } else {
-            format!("{} {}", post.title, title_badges.join(" "))
-        };
+    let styled_lines = parse_content_to_styled_lines(&text_content, theme);
 
-        let paragraph = Paragraph::new(text_content)
-            .block(Block::default()
+    let mut title_badges = Vec::new();
+    if post.is_bookmarked {
+        title_badges.push("★");
+    }
+    if post.is_read_later {
+        title_badges.push("󰃰");
+    }
+    if post.is_archived {
+        title_badges.push("󰆧");
+    }
+
+    let title_text = if title_badges.is_empty() {
+        post.title.clone()
+    } else {
+        format!("{} {}", post.title, title_badges.join(" "))
+    };
+
+    // Add metadata line
+    let feed_name = post.feed_title.as_deref().unwrap_or("Unknown");
+    let date = post
+        .pub_date
+        .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default();
+
+    let mut all_lines = vec![
+        Line::from(Span::styled(
+            format!("󰉋 {}  │  󰃰 {}", feed_name, date),
+            Style::default().fg(theme.subtext()),
+        )),
+        Line::from(""),
+    ];
+    all_lines.extend(styled_lines);
+
+    let paragraph = Paragraph::new(all_lines)
+        .block(
+            Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.accent_primary()))
-                .title(title_text.as_str())
-                .title_style(Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)))
-            .style(Style::default().fg(theme.text()))
-            .wrap(Wrap { trim: true })
-            .scroll((app.scroll_offset, 0));
+                .title(format!(" {} ", title_text))
+                .title_style(Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD))
+                .padding(ratatui::widgets::Padding::horizontal(1)),
+        )
+        .wrap(Wrap { trim: true })
+        .scroll((app.scroll_offset, 0));
 
-        f.render_widget(paragraph, area);
-    }
+    f.render_widget(paragraph, padded_area);
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme) {
-    let mode = if let Some(msg) = &app.message {
-        format!(" {} (Press any key)", msg)
+    let keys = if let Some(msg) = &app.message {
+        format!(" {} ", msg)
     } else {
-        match (&app.input_mode, &app.view_context, app.tabs.get_active()) {
-            (InputMode::AddingFeed, _, _) => " Type URL │ [Enter] Continue │ [Esc] Cancel".to_string(),
-            (InputMode::SelectingCategoryForFeed, _, _) => " [j/k] Navigate │ [Enter] Select │ [Esc] Cancel".to_string(),
-            (InputMode::SelectingCategoryForView, _, _) => " [j/k] Navigate │ [Enter] Select │ [Esc] Cancel".to_string(),
-            (InputMode::AddingCategory, _, _) => " Type name │ [Enter] Add │ [Esc] Cancel".to_string(),
-            (InputMode::Normal, ViewContext::Article, _) => " [Esc] Back │ [j/k] Scroll │ [B] Fav │ [A] Archive │ [L] Later │ [Q] Quit".to_string(),
-            (InputMode::Normal, ViewContext::List, Tab::Dashboard) => " [1-6] Nav │ [Tab] Next │ [Q] Quit".to_string(),
-            (InputMode::Normal, ViewContext::List, Tab::FeedManager) => " [+] Add │ [d] Delete │ [j/k] Nav │ [Q] Quit".to_string(),
-            (InputMode::Normal, ViewContext::List, Tab::Category) => {
-                if app.category_view.active_category.is_some() {
-                    " [Enter] Read │ [j/k] Nav │ [c] Change Cat │ [B] Fav │ [Q] Quit".to_string()
-                } else {
-                    " [Enter] Select │ [+] Add Category │ [d] Delete │ [Q] Quit".to_string()
-                }
+        match (&app.input_mode, &app.focus) {
+            (InputMode::Normal, FocusPane::Sidebar) => {
+                " h/l:Focus │ j/k:Nav │ Enter:Select │ a:Add Feed │ n:New Cat │ e:Edit Feeds │ d:Del │ ? ".to_string()
             }
-            (InputMode::Normal, ViewContext::List, Tab::Favourite) |
-            (InputMode::Normal, ViewContext::List, Tab::ReadLater) |
-            (InputMode::Normal, ViewContext::List, Tab::Archived) => {
-                " [Enter] Read │ [j/k] Nav │ [d] Delete │ [B] Fav │ [A] Arc │ [L] Later │ [Q] Quit".to_string()
+            (InputMode::Normal, FocusPane::Posts) => {
+                " h/l:Focus │ j/k:Nav │ Enter:Read │ b:Star │ l:Later │ m:Read │ d:Del │ r:Refresh ".to_string()
             }
+            (InputMode::Normal, FocusPane::Article) => {
+                " Esc:Back │ j/k:Scroll │ b:Star │ l:Later │ a:Archive │ o:Browser │ y:Copy URL ".to_string()
+            }
+            (InputMode::AddingFeed, _) | (InputMode::AddingCategory, _) => {
+                " Type text │ Enter:Confirm │ Esc:Cancel ".to_string()
+            }
+            (InputMode::SelectingCategory, _) => {
+                " j/k:Navigate │ Enter:Select │ Esc:Cancel ".to_string()
+            }
+            (InputMode::EditingCategoryFeeds(_), _) => {
+                " j/k:Navigate │ a:Add Feed │ d:Delete Feed │ Esc:Back ".to_string()
+            }
+            _ => String::new(),
         }
     };
 
     let style = if app.message.is_some() {
-        Style::default().fg(theme.base()).bg(theme.warning()).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme.base()).bg(theme.warning())
     } else {
         Style::default().fg(theme.text()).bg(theme.mantle())
     };
 
-    let status = Paragraph::new(mode).style(style);
+    let status = Paragraph::new(keys).style(style);
     f.render_widget(status, area);
+}
+
+fn draw_welcome(f: &mut Frame, _app: &App, area: Rect, theme: &dyn Theme) {
+    let welcome_text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "󰑫 Welcome to News Reader",
+            Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "No feeds configured yet. Get started:",
+            Style::default().fg(theme.text()),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  [a] ", Style::default().fg(theme.warning()).add_modifier(Modifier::BOLD)),
+            Span::styled("Add a feed URL", Style::default().fg(theme.text())),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  [i] ", Style::default().fg(theme.warning()).add_modifier(Modifier::BOLD)),
+            Span::styled("Import from OPML file", Style::default().fg(theme.text())),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  [q] ", Style::default().fg(theme.warning()).add_modifier(Modifier::BOLD)),
+            Span::styled("Quit", Style::default().fg(theme.text())),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "OPML files are searched in ~/Downloads/",
+            Style::default().fg(theme.subtext()).add_modifier(Modifier::ITALIC),
+        )),
+    ];
+
+    let paragraph = Paragraph::new(welcome_text).alignment(Alignment::Center).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent_primary()))
+            .title(" 󰋜 Setup ")
+            .title_style(Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)),
+    );
+
+    let popup_area = centered_rect(50, 50, area);
+    f.render_widget(Clear, popup_area);
+    f.render_widget(paragraph, popup_area);
+}
+
+fn draw_input_modal(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme, title: &str) {
+    let popup_area = centered_rect(60, 20, area);
+    f.render_widget(Clear, popup_area);
+
+    let input_text = &app.text_input.value;
+    let cursor_pos = app.text_input.cursor_position;
+
+    let display_text = format!(
+        "{}█{}",
+        &input_text[..cursor_pos],
+        &input_text[cursor_pos..]
+    );
+
+    let paragraph = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(Span::styled(&display_text, Style::default().fg(theme.text()))),
+        Line::from(""),
+    ])
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent_primary()))
+            .title(format!(" {} ", title))
+            .title_style(Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)),
+    );
+
+    f.render_widget(paragraph, popup_area);
+}
+
+fn draw_category_selector(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme) {
+    let popup_area = centered_rect(40, 50, area);
+    f.render_widget(Clear, popup_area);
+
+    let items: Vec<ListItem> = app
+        .sidebar
+        .categories
+        .iter()
+        .enumerate()
+        .map(|(i, cat)| {
+            let is_selected = i == app.sidebar.category_index;
+            let style = if is_selected {
+                Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text())
+            };
+            let prefix = if is_selected { "▶ " } else { "  " };
+            ListItem::new(Line::from(Span::styled(format!("{}{}", prefix, cat), style)))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent_primary()))
+            .title(" Select Category ")
+            .title_style(Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)),
+    );
+
+    let mut state = ListState::default();
+    state.select(Some(app.sidebar.category_index));
+    f.render_stateful_widget(list, popup_area, &mut state);
+}
+
+fn draw_category_feeds_editor(f: &mut Frame, app: &App, area: Rect, theme: &dyn Theme, category: &str) {
+    let popup_area = centered_rect(70, 70, area);
+    f.render_widget(Clear, popup_area);
+
+    if app.category_feeds.is_empty() {
+        let empty_msg = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "No feeds in this category",
+                Style::default().fg(theme.subtext()),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press 'a' to add a feed, or Esc to go back",
+                Style::default().fg(theme.overlay()),
+            )),
+        ])
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.accent_primary()))
+                .title(format!(" Feeds in '{}' ", category))
+                .title_style(Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)),
+        );
+        f.render_widget(empty_msg, popup_area);
+        return;
+    }
+
+    let items: Vec<ListItem> = app
+        .category_feeds
+        .iter()
+        .enumerate()
+        .map(|(i, feed)| {
+            let is_selected = i == app.category_feed_index;
+            let title = feed.title.as_deref().unwrap_or("(No title)");
+            let url = if feed.url.len() > 50 {
+                format!("{}…", &feed.url[..49])
+            } else {
+                feed.url.clone()
+            };
+
+            let style = if is_selected {
+                Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text())
+            };
+
+            let cursor = if is_selected { "▶ " } else { "  " };
+
+            ListItem::new(vec![
+                Line::from(vec![
+                    Span::styled(cursor, Style::default().fg(theme.accent_primary())),
+                    Span::styled(title, style),
+                ]),
+                Line::from(Span::styled(
+                    format!("    {}", url),
+                    Style::default().fg(theme.subtext()),
+                )),
+            ])
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.accent_primary()))
+            .title(format!(" Feeds in '{}' ({}) ", category, app.category_feeds.len()))
+            .title_style(Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)),
+    );
+
+    let mut state = ListState::default();
+    state.select(Some(app.category_feed_index));
+    f.render_stateful_widget(list, popup_area, &mut state);
+}
+
+fn draw_confirm_modal(f: &mut Frame, area: Rect, theme: &dyn Theme, message: &str) {
+    let popup_area = centered_rect(40, 20, area);
+    f.render_widget(Clear, popup_area);
+
+    let paragraph = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(Span::styled(message, Style::default().fg(theme.warning()))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("[y] ", Style::default().fg(theme.accent_primary())),
+            Span::styled("Yes", Style::default().fg(theme.text())),
+            Span::raw("    "),
+            Span::styled("[n] ", Style::default().fg(theme.accent_primary())),
+            Span::styled("No", Style::default().fg(theme.text())),
+        ]),
+    ])
+    .alignment(Alignment::Center)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(theme.warning()))
+            .title(" Confirm ")
+            .title_style(Style::default().fg(theme.warning()).add_modifier(Modifier::BOLD)),
+    );
+
+    f.render_widget(paragraph, popup_area);
+}
+
+fn draw_help_overlay(f: &mut Frame, area: Rect, theme: &dyn Theme) {
+    let popup_area = centered_rect(70, 80, area);
+    f.render_widget(Clear, popup_area);
+
+    let help_text = vec![
+        Line::from(Span::styled("Navigation", Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD))),
+        Line::from("  h/l         Focus left/right pane"),
+        Line::from("  j/k         Navigate up/down"),
+        Line::from("  Enter       Select/Open item"),
+        Line::from("  Esc         Go back / Cancel"),
+        Line::from(""),
+        Line::from(Span::styled("Sidebar", Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD))),
+        Line::from("  a / +       Add new feed (with category selection)"),
+        Line::from("  n           Add new category"),
+        Line::from("  e           Edit category feeds (view/delete feeds)"),
+        Line::from("  d           Delete selected category"),
+        Line::from(""),
+        Line::from(Span::styled("Posts List", Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD))),
+        Line::from("  b           Toggle bookmark/star"),
+        Line::from("  l           Toggle read later"),
+        Line::from("  a           Toggle archive"),
+        Line::from("  m           Toggle read/unread"),
+        Line::from("  d           Delete post"),
+        Line::from("  r           Refresh feeds"),
+        Line::from("  u           Toggle show/hide read posts"),
+        Line::from(""),
+        Line::from(Span::styled("Article View", Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD))),
+        Line::from("  j/k         Scroll content"),
+        Line::from("  PgUp/PgDn   Scroll faster"),
+        Line::from("  o           Open in browser"),
+        Line::from("  y           Copy URL to clipboard"),
+        Line::from(""),
+        Line::from(Span::styled("General", Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD))),
+        Line::from("  ?           Toggle this help"),
+        Line::from("  q           Quit application"),
+        Line::from(""),
+        Line::from(Span::styled("Press any key to close", Style::default().fg(theme.subtext()))),
+    ];
+
+    let paragraph = Paragraph::new(help_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(theme.accent_primary()))
+                .title(" Help ")
+                .title_style(Style::default().fg(theme.accent_secondary()).add_modifier(Modifier::BOLD)),
+        );
+
+    f.render_widget(paragraph, popup_area);
+}
+
+fn parse_content_to_styled_lines<'a>(content: &'a str, theme: &'a dyn Theme) -> Vec<Line<'a>> {
+    content
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') {
+                Line::from(Span::styled(
+                    trimmed.to_string(),
+                    Style::default().fg(theme.accent_primary()).add_modifier(Modifier::BOLD),
+                ))
+            } else if trimmed.starts_with("* ") || trimmed.starts_with("- ") {
+                Line::from(vec![
+                    Span::styled("  • ", Style::default().fg(theme.accent_primary())),
+                    Span::styled(trimmed[2..].to_string(), Style::default().fg(theme.text())),
+                ])
+            } else if trimmed.starts_with("> ") {
+                Line::from(Span::styled(
+                    format!("│ {}", &trimmed[2..]),
+                    Style::default().fg(theme.subtext()).add_modifier(Modifier::ITALIC),
+                ))
+            } else {
+                Line::from(Span::styled(line.to_string(), Style::default().fg(theme.text())))
+            }
+        })
+        .collect()
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

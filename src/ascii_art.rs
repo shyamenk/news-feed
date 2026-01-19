@@ -1,11 +1,4 @@
-pub const NEWS_BANNER: &str = r#"
-    _   _                      ____                _           
-   | \ | | _____      _____   |  _ \ ___  __ _  __| | ___ _ __ 
-   |  \| |/ _ \ \ /\ / / __|  | |_) / _ \/ _` |/ _` |/ _ \ '__|
-   | |\  |  __/\ V  V /\__ \  |  _ <  __/ (_| | (_| |  __/ |   
-   |_| \_|\___| \_/\_/ |___/  |_| \_\___|\__,_|\__,_|\___|_|   
-"#;
-
+#[allow(dead_code)]
 pub const QUOTES: &[&str] = &[
     "\"Stay curious, keep reading.\"",
     "\"Knowledge is the new currency.\"",
@@ -21,6 +14,7 @@ pub const QUOTES: &[&str] = &[
     "\"Books are a uniquely portable magic.\"",
 ];
 
+#[allow(dead_code)]
 pub fn get_random_quote() -> &'static str {
     use std::time::{SystemTime, UNIX_EPOCH};
     let seed = SystemTime::now()

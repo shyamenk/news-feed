@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::error::Error;
+use std::path::Path;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
@@ -37,9 +38,25 @@ pub struct FeedsConfig {
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FeedSource {
-    pub url: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub urls: Option<Vec<String>>,
     #[serde(default = "default_category")]
     pub category: String,
+}
+
+impl FeedSource {
+    pub fn get_urls(&self) -> Vec<String> {
+        let mut result = Vec::new();
+        if let Some(ref url) = self.url {
+            result.push(url.clone());
+        }
+        if let Some(ref urls) = self.urls {
+            result.extend(urls.clone());
+        }
+        result
+    }
 }
 
 fn default_theme() -> String {
@@ -85,12 +102,14 @@ impl Default for FeedsConfig {
     }
 }
 
-pub fn load_config() -> Result<Config, Box<dyn Error>> {
+pub fn load_config_from_path<P: AsRef<Path>>(path: P) -> Result<Config, Box<dyn Error>> {
+    let path = path.as_ref();
+
     // Try to read existing config
-    match fs::read_to_string("config.toml") {
+    match fs::read_to_string(path) {
         Ok(config_str) => {
             let config: Config = toml::from_str(&config_str)
-                .map_err(|e| format!("Failed to parse config.toml: {}", e))?;
+                .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;
             Ok(config)
         }
         Err(_) => {
@@ -102,24 +121,32 @@ pub fn load_config() -> Result<Config, Box<dyn Error>> {
                     urls: vec![],
                     sources: vec![
                         FeedSource {
-                            url: "https://nesslabs.com/feed".to_string(),
+                            url: Some("https://nesslabs.com/feed".to_string()),
+                            urls: None,
                             category: "Productivity".to_string(),
                         },
                         FeedSource {
-                            url: "https://dev.to/rss".to_string(),
+                            url: Some("https://dev.to/rss".to_string()),
+                            urls: None,
                             category: "Technology".to_string(),
                         },
                         FeedSource {
-                            url: "https://jamesclear.com/feed".to_string(),
+                            url: Some("https://jamesclear.com/feed".to_string()),
+                            urls: None,
                             category: "Productivity".to_string(),
                         },
                     ],
                 },
             };
 
+            // Ensure parent directory exists
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).ok();
+            }
+
             // Save the default config
-            save_config(&default_config)?;
-            eprintln!("Created default config.toml");
+            save_config_to_path(&default_config, path)?;
+            eprintln!("Created default config at: {}", path.display());
             Ok(default_config)
         }
     }
@@ -127,9 +154,21 @@ pub fn load_config() -> Result<Config, Box<dyn Error>> {
 
 #[allow(dead_code)]
 pub fn save_config(config: &Config) -> Result<(), Box<dyn Error>> {
+    save_config_to_path(config, "config.toml")
+}
+
+#[allow(dead_code)]
+pub fn save_config_to_path<P: AsRef<Path>>(config: &Config, path: P) -> Result<(), Box<dyn Error>> {
+    let path = path.as_ref();
     let config_str = toml::to_string_pretty(config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write("config.toml", config_str)
-        .map_err(|e| format!("Failed to write config.toml: {}", e))?;
+
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+
+    fs::write(path, config_str)
+        .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
     Ok(())
 }

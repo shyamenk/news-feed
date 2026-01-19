@@ -29,6 +29,7 @@ impl Default for AppStats {
     }
 }
 
+#[allow(dead_code)]
 impl AppStats {
     pub fn from_db(db: &Database) -> Result<Self> {
         let total_posts = db.get_count("SELECT COUNT(*) FROM posts")?;
@@ -53,6 +54,7 @@ impl AppStats {
         })
     }
 
+    #[allow(dead_code)]
     pub fn reading_progress(&self) -> f64 {
         if self.total_posts > 0 {
             self.read_posts as f64 / self.total_posts as f64

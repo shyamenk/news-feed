@@ -1,140 +1,158 @@
 # News Feed TUI (News)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![GitHub issues](https://img.shields.io/github/issues/shyamenk/news-feed)](https://github.com/shyamenk/news-feed/issues)
-[![GitHub stars](https://img.shields.io/github/stars/shyamenk/news-feed)](https://github.com/shyamenk/news-feed/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/shyamenk/news-feed)](https://github.com/shyamenk/news-feed/network)
 [![Made with Rust](https://img.shields.io/badge/Made%20with-Rust-orange?logo=rust)](https://www.rust-lang.org/)
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-FFDD00.svg?logo=buymeacoffee&logoColor=black)](https://www.buymeacoffee.com/shyamenk)
 
 A fast, distraction-free, terminal-based RSS news feed reader built with Rust and Ratatui. Designed for developers who want to stay updated without leaving the command line.
 
-![Screenshot](dashboard.png)
-
 ## Features
 
--   **Fast & Lightweight:** Built with Rust for minimal resource usage.
--   **Keyboard-First:** Navigate efficiently using Vim-like keybindings (`j`/`k`).
--   **Offline-Friendly:** Feeds are cached locally in a SQLite database (`news_feed.db`).
--   **Readability:** Articles are rendered as text directly in the terminal using `html2text`.
--   **Organization:** Group feeds by categories, bookmark interesting articles, or save them for later.
--   **Customizable:** Configurable themes and feed sources via `config.toml`.
+- **Two-Pane Layout**: Sidebar navigation + posts list for intuitive browsing
+- **Keyboard-First**: Vim-style navigation (`h/j/k/l`) with full keyboard control
+- **Smart Views**: Fresh (unread), Starred, Read Later, Archived
+- **Categories**: Organize feeds by category with lazy loading
+- **Lazy Loading**: Only fetches data when a category is selected
+- **Read State Tracking**: Read posts automatically hide from Fresh view
+- **Clipboard Support**: Copy URLs with OSC52 (works in most terminals)
+- **Offline-Friendly**: Feeds cached locally in SQLite database
+- **Customizable Themes**: Catppuccin Mocha, Claude Code themes included
 
-## Prerequisites
+## Quick Start
 
--   **Rust & Cargo:** You need the Rust toolchain installed.
-    ```bash
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-    ```
--   **Dependencies:**
-    -   `sqlite3` (usually available on most Linux distros, required for `rusqlite` bundled feature or linking).
-
-## Build & Installation
-
-### 1. Clone the repository
 ```bash
 git clone <repository_url>
 cd news-feed
-```
-
-### 2. Build for Release
-Compile the optimized binary:
-```bash
-cargo build --release
-```
-The binary will be located at `./target/release/news-feed`.
-
-### 3. Setup `news` Command
-To run the application using the custom `news` command, you can create an alias or move the binary to your executable path.
-
-**Option A: Create an Alias (Temporary)**
-```bash
-alias news='./target/release/news-feed'
-```
-
-**Option B: Add to PATH (Permanent)**
-Add the following line to your `~/.bashrc` or `~/.zshrc`:
-```bash
-alias news='/path/to/news-feed/target/release/news-feed'
-```
-*Replace `/path/to/news-feed` with the actual path.*
-
-**Option C: Install Globally**
-Copy the binary to a system directory (requires sudo):
-```bash
-sudo cp ./target/release/news-feed /usr/local/bin/news
-```
-Now you can simply run `news` from anywhere!
-
-## Usage
-
-Start the application:
-```bash
+chmod +x install.sh
+./install.sh
 news
-# or
-cargo run --release
 ```
 
-### Keybindings
+## Keybindings
 
+### Navigation
 | Key | Action |
-| --- | --- |
-| **General** | |
-| `q` | Quit the application |
-| `Tab` / `BackTab` | Cycle through tabs (Dashboard, Feeds, etc.) |
-| `1` - `6` | Switch directly to a specific tab |
-| **Navigation** | |
-| `j` / `Down` | Move down / Select next item |
-| `k` / `Up` | Move up / Select previous item |
-| `Enter` | Open selected article / Select category |
-| `Esc` | Go back / Cancel input |
-| **Actions** | |
-| `b` | Toggle **Bookmark** |
-| `a` | Toggle **Archive** |
-| `l` | Toggle **Read Later** |
-| `r` | Reload posts / specific feed |
-| `d` | Delete selected feed or post (depending on context) |
-| **Feed Management** | |
-| `n` / `+` | Add new feed (in Feed Manager) or Category |
+|-----|--------|
+| `h` / `l` | Focus left/right pane |
+| `j` / `k` | Navigate up/down |
+| `Enter` | Select item / Open article |
+| `Esc` | Go back / Cancel |
+| `Tab` | Switch focus between panes |
 
-### Tabs Overview
-1.  **Dashboard:** Overview of recent activity.
-2.  **Feeds:** Manage your RSS sources.
-3.  **Categories:** Browse feeds grouped by category.
-4.  **Read Later:** List of articles saved for later.
-5.  **Bookmarks:** Your starred/favorite articles.
-6.  **Archived:** History of archived posts.
+### Actions
+| Key | Action |
+|-----|--------|
+| `b` | Toggle bookmark/star |
+| `l` | Toggle read later |
+| `a` | Archive (in article) / Add (in sidebar) |
+| `m` | Toggle read/unread |
+| `d` | Delete (with confirmation) |
+| `r` | Refresh feeds |
+| `u` | Toggle show/hide read posts |
+
+### Article View
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Scroll content |
+| `PgUp` / `PgDn` | Scroll faster |
+| `o` | Open in browser |
+| `y` | Copy URL to clipboard |
+
+### General
+| Key | Action |
+|-----|--------|
+| `?` | Show help overlay |
+| `q` | Quit application |
+
+## UI Layout
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 󰑫 News Reader                                     [Fresh]       │
+├────────────────────┬────────────────────────────────────────────┤
+│  VIEWS             │  Posts                                     │
+│   Fresh (12)      │                                            │
+│  ★ Starred (3)     │  ▶ ● How to build TUIs in Rust     01/19   │
+│   Later (5)       │    ○ Understanding async/await     01/18   │
+│  󰆧 Archive (2)     │    ● New Ratatui features          01/18   │
+│                    │                                            │
+│  CATEGORIES        │                                            │
+│  ▶ Tech (15)       │                                            │
+│    Security (8)    │                                            │
+│    General (5)     │                                            │
+├────────────────────┴────────────────────────────────────────────┤
+│ h/l:Focus │ j/k:Nav │ Enter:Open │ b:Star │ ?:Help │ q:Quit     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Post Indicators
+- `●` Unread post
+- `○` Read post
+- `★` Starred/bookmarked
+- `󰃰` Saved for later
+- `󰆧` Archived
+
+## First Run Setup
+
+On first run (no feeds configured), you'll see a welcome screen:
+- **[a]** Add a feed URL manually
+- **[i]** Import from OPML file (searches `~/Downloads/` for `.opml` files)
+
+## Command Line Options
+
+```bash
+news [OPTIONS] [COMMAND]
+```
+
+### Options
+- `-c, --config <FILE>` - Path to configuration file
+- `-d, --db-path <FILE>` - Path to database file
+- `-t, --theme <THEME>` - Theme to use (catppuccin-mocha, claude-code)
+- `-h, --help` - Print help
+
+### Commands
+- `reset-db` - Reset the database
+- `export-feeds` - Export feeds to OPML format
+- `import-feeds <FILE>` - Import feeds from OPML file
+- `cleanup --days <N>` - Delete posts older than N days
+- `info` - Show configuration paths and statistics
+- `list-feeds` - List all configured feeds
 
 ## Configuration
 
-On the first run, a `config.toml` file is automatically generated in the project root if it doesn't exist.
+### File Locations
+- **Config file:** `~/.config/news/config.toml`
+- **Database:** `~/.local/share/news/news_feed.db`
 
-**Default `config.toml` Structure:**
+### Example config.toml
 ```toml
 [app]
-theme = "catppuccin-mocha" # Options: default, catppuccin-mocha
+theme = "catppuccin-mocha"  # or "claude-code"
 startup_cleanup = false
 
 [ui]
 show_ascii_banner = true
-default_tab = "all-posts"
+default_tab = "fresh"
 
 [feeds]
-urls = [] # Simple list of URLs
-# Or structured sources with categories:
-[[feeds.sources]]
-url = "https://nesslabs.com/feed"
-category = "Productivity"
+urls = []
 
 [[feeds.sources]]
 url = "https://dev.to/rss"
 category = "Technology"
+
+[[feeds.sources]]
+url = "https://nesslabs.com/feed"
+category = "Productivity"
 ```
 
-## Database
-The application uses a local SQLite database (`news_feed.db`) to store feeds, posts, and their states (read, bookmarked, etc.). If you delete this file, the app will recreate it and re-fetch feeds on the next run (losing your saved state).
+## Uninstall
 
-## Troubleshooting
+```bash
+./uninstall.sh
+```
 
--   **Config Error:** If the app fails to load, check `config.toml` for syntax errors. Delete it to regenerate the default.
--   **Database Locks:** If the app crashes or hangs, ensure no other instance is writing to `news_feed.db`.
+This removes the binary from `/usr/local/bin` but preserves your configuration and database files.
+
+## License
+
+MIT

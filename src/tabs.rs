@@ -1,6 +1,7 @@
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tab {
-    Dashboard,
+    FreshFeed,
     Category,
     Favourite,
     ReadLater,
@@ -8,10 +9,11 @@ pub enum Tab {
     FeedManager,
 }
 
+#[allow(dead_code)]
 impl Tab {
     pub fn title(&self) -> String {
         match self {
-            Tab::Dashboard => "Dashboard".to_string(),
+            Tab::FreshFeed => "Fresh".to_string(),
             Tab::Category => "Category".to_string(),
             Tab::Favourite => "Favourite".to_string(),
             Tab::ReadLater => "Read Later".to_string(),
@@ -22,7 +24,7 @@ impl Tab {
 
     pub fn icon(&self) -> &'static str {
         match self {
-            Tab::Dashboard => "󰋜 ",
+            Tab::FreshFeed => "󰈸 ",
             Tab::Category => "󰻞 ",
             Tab::Favourite => "󰃀 ",
             Tab::ReadLater => "󰃰 ",
@@ -32,16 +34,18 @@ impl Tab {
     }
 }
 
+#[allow(dead_code)]
 pub struct TabState {
     pub tabs: Vec<Tab>,
     pub active_index: usize,
 }
 
+#[allow(dead_code)]
 impl TabState {
     pub fn new() -> Self {
         TabState {
             tabs: vec![
-                Tab::Dashboard,
+                Tab::FreshFeed,
                 Tab::Category,
                 Tab::Favourite,
                 Tab::ReadLater,
